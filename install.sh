@@ -22,6 +22,15 @@ DNF_PACKAGES=(
   bleachbit
   mpv
   zsh
+  gnome-tweaks  # buat apply theme Orchis + icon Colloid
+  pavucontrol   # cek/atur sample rate & routing PipeWire
+  gh            # GitHub CLI
+  wireshark
+  nmap
+  tcpdump
+  ripgrep
+  fzf
+  bat
 )
 
 FLATPAK_PACKAGES=(
@@ -29,6 +38,8 @@ FLATPAK_PACKAGES=(
   md.obsidian.Obsidian
   com.discordapp.Discord
   com.protonvpn.www
+  com.mattjakeman.ExtensionManager
+  com.github.wwmm.easyeffects  # EQ + convolver, buat profil AutoEQ sesuai IEM
 )
 
 NPM_GLOBAL_PACKAGES=(
@@ -55,6 +66,18 @@ log "Install paket DNF"
 for pkg in "${DNF_PACKAGES[@]}"; do
   sudo dnf install -y "$pkg" || warn "Gagal install (dnf): $pkg"
 done
+
+log "Izinin capture packet non-root (wireshark)"
+sudo usermod -aG wireshark "$USER" || warn "Gagal tambah user ke grup wireshark"
+
+log "Install Docker (repo resmi)"
+sudo dnf install -y dnf-plugins-core || warn "Gagal install dnf-plugins-core"
+sudo dnf config-manager addrepo --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo \
+  || warn "Gagal add repo Docker"
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+  || warn "Gagal install Docker"
+sudo systemctl enable --now docker || warn "Gagal enable service Docker"
+sudo usermod -aG docker "$USER" || warn "Gagal tambah user ke grup docker"
 
 log "Install driver NVIDIA (akmod-nvidia)"
 sudo dnf install -y kernel-devel kernel-headers akmod-nvidia xorg-x11-drv-nvidia-cuda \
@@ -110,6 +133,18 @@ log "Set zsh sebagai default shell"
 sudo usermod -s "$(command -v zsh)" "$USER" || warn "Gagal ganti default shell ke zsh"
 warn "Default shell baru kepake setelah logout/login ulang."
 
+log "Config PipeWire buat hi-res audio (IEM/DAC)"
+mkdir -p "$HOME/.config/pipewire/pipewire.conf.d"
+cat > "$HOME/.config/pipewire/pipewire.conf.d/10-hires.conf" <<'EOF'
+context.properties = {
+  default.clock.rate          = 96000
+  default.clock.allowed-rates = [ 44100 48000 88200 96000 176400 192000 ]
+}
+EOF
+systemctl --user restart pipewire pipewire-pulse wireplumber 2>/dev/null \
+  || warn "Restart PipeWire manual: systemctl --user restart pipewire pipewire-pulse wireplumber"
+warn "Kalau DAC/IEM situ max 48k/96k, sesuaikan default.clock.rate di ~/.config/pipewire/pipewire.conf.d/10-hires.conf"
+
 log "Install Orchis GTK theme"
 tmp=$(mktemp -d)
 mkdir -p "$HOME/.themes" "$HOME/.icons"
@@ -127,4 +162,4 @@ else
 fi
 rm -rf "$tmp"
 
-log "Selesai. Reboot disarankan (driver NVIDIA baru selesai load setelah restart)."
+log "Selesai. Reboot disarankan (driver NVIDIA + grup wireshark/docker baru kepake setelah restart/relogin)."
