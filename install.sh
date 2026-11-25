@@ -14,15 +14,19 @@ fi
 # ============================================================
 
 DNF_PACKAGES=(
-  nodejs        # nodejs + npm
+  nodejs        # nodejs + npm (bawaan Fedora)
   gcc-c++       # dibutuhkan native module npm (node-gyp)
   make
   git
+  python3       # bawaan Fedora, ditambah eksplisit
+  python3-pip
+  python3-venv
+  python3-devel
   thunderbird
   bleachbit
   mpv
   zsh
-  gnome-tweaks  # buat apply theme Orchis + icon Colloid
+  gnome-tweaks  # buat apply tema GTK + ikon
   pavucontrol   # cek/atur sample rate & routing PipeWire
   gh            # GitHub CLI
   wireshark
@@ -31,21 +35,24 @@ DNF_PACKAGES=(
   ripgrep
   fzf
   bat
+  orca          # screen reader GNOME
 )
 
 FLATPAK_PACKAGES=(
   com.spotify.Client
   md.obsidian.Obsidian
-  com.discordapp.Discord
+  com.discordapp.Discord      # Discord
   com.protonvpn.www
   com.mattjakeman.ExtensionManager
-  com.github.wwmm.easyeffects  # EQ + convolver, buat profil AutoEQ sesuai IEM
+  com.github.wwmm.easyeffects # EQ + convolver, buat profil AutoEQ sesuai IEM
 )
 
+NVM_VERSION="v0.40.3"
 NPM_GLOBAL_PACKAGES=(
-  @anthropic-ai/claude-code
-  @openai/codex
-  cline
+  @anthropic-ai/claude-code # claude
+  @openai/codex             # codex
+  cline                     # cline
+  omniroute                 # omniroute
   9router
 )
 
@@ -67,7 +74,7 @@ for pkg in "${DNF_PACKAGES[@]}"; do
   sudo dnf install -y "$pkg" || warn "Gagal install (dnf): $pkg"
 done
 
-log "Izinin capture packet non-root (wireshark)"
+log "Izinkan capture paket non-root (wireshark)"
 sudo usermod -aG wireshark "$USER" || warn "Gagal tambah user ke grup wireshark"
 
 log "Install Docker (repo resmi)"
@@ -90,18 +97,46 @@ for app in "${FLATPAK_PACKAGES[@]}"; do
   sudo flatpak install -y flathub "$app" || warn "Gagal install (flatpak): $app"
 done
 
-log "Install Brave browser (official installer)"
+log "Install Brave browser (installer resmi)"
 curl -fsS https://dl.brave.com/install.sh | sh || warn "Gagal install Brave"
 
-log "Install Zed IDE (official installer)"
+log "Install Zed IDE (installer resmi)"
 curl -f https://zed.dev/install.sh | sh || warn "Gagal install Zed"
 
-log "Install npm global CLI tools"
-for pkg in "${NPM_GLOBAL_PACKAGES[@]}"; do
-  sudo npm install -g "$pkg" || warn "Gagal install (npm): $pkg"
-done
-# ponytail: sudo npm -g nulis ke /usr milik root. Kalau mau tanpa sudo,
-# set prefix npm ke folder user sendiri (npm config set prefix ~/.npm-global).
+log "Install NVM (Node Version Manager)"
+if [[ ! -d "$HOME/.nvm" ]]; then
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash || warn "Gagal install NVM"
+else
+  warn "NVM sudah ada, skip install."
+fi
+
+# Muat nvm untuk sesi ini agar npm install -g tidak butuh sudo
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+if command -v nvm >/dev/null 2>&1; then
+  log "Install Node LTS via NVM + npm global CLI"
+  nvm install --lts || warn "Gagal install Node LTS via nvm"
+  nvm alias default 'lts/*' || warn "Gagal set default Node LTS"
+  for pkg in "${NPM_GLOBAL_PACKAGES[@]}"; do
+    npm install -g "$pkg" || warn "Gagal install (npm): $pkg"
+  done
+else
+  warn "nvm tidak tersedia di sesi ini; lewati npm global."
+fi
+
+# Tambahkan nvm ke .zshrc agar persist setelah reboot
+if [[ -f "$HOME/.zshrc" ]]; then
+  if ! grep -q 'export NVM_DIR' "$HOME/.zshrc"; then
+    cat >> "$HOME/.zshrc" <<'ZSHRC_EOF'
+
+# NVM
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+ZSHRC_EOF
+  fi
+fi
 
 log "Install Oh My Zsh + plugin (autosuggestions, syntax highlighting)"
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
