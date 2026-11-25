@@ -14,46 +14,113 @@ fi
 # ============================================================
 
 DNF_PACKAGES=(
-  nodejs        # nodejs + npm (bawaan Fedora)
-  gcc-c++       # dibutuhkan native module npm (node-gyp)
-  make
+  # --- Terminal & shell ---
+  alacritty
+  zsh
+  fzf
+  ripgrep
+  bat
+  eza
+  htop
+  tmux
+
+  # --- Development tools ---
   git
-  python3       # bawaan Fedora, ditambah eksplisit
+  gh
+  gcc-c++
+  make
+  python3
   python3-pip
   python3-venv
   python3-devel
-  thunderbird
-  bleachbit
+  nodejs
+  gdb
+
+  # --- Media & graphics ---
+  vlc
   mpv
-  zsh
-  gnome-tweaks  # buat apply tema GTK + ikon
-  pavucontrol   # cek/atur sample rate & routing PipeWire
-  gh            # GitHub CLI
+  ffmpeg
+  bleachbit
+  baobab
+  brightnessctl
+
+  # --- Productivity & office ---
+  thunderbird
+  libreoffice-writer
+  libreoffice-calc
+  libreoffice-impress
+  zotero
+  sqlitebrowser
+
+  # --- System utilities ---
+  gnome-tweaks
+  pavucontrol
   wireshark
   nmap
   tcpdump
-  ripgrep
-  fzf
-  bat
-  orca          # screen reader GNOME
+  aria2
+  evince
+  flatpak
+
+  # --- Accessibility ---
+  orca
 )
 
 FLATPAK_PACKAGES=(
-  com.spotify.Client
+  # --- Communication ---
+  com.spotify.Client            # Spotify
   md.obsidian.Obsidian
-  com.discordapp.Discord      # Discord
+  com.discordapp.Discord        # Discord
   com.protonvpn.www
-  com.mattjakeman.ExtensionManager
-  com.github.wwmm.easyeffects # EQ + convolver, buat profil AutoEQ sesuai IEM
+
+  # --- Utilities ---
+  com.mattjakeman.ExtensionManager   # GNOME Extension Manager
+  com.github.wwmm.easyeffects        # EQ + convolver (AutoEQ)
+  com.obsproject.Studio              # OBS Studio
+
+  # --- ArtCraft suite (ai.storyteller) ---
+  ai.storyteller.artcraft-launcher
+  ai.storyteller.deckcraft
+  ai.storyteller.filmcraft
+  ai.storyteller.pdfcraft
+  ai.storyteller.photocraft
+  ai.storyteller.wordcraft
+
+  # --- Lainnya ---
+  com.blitzfc.qbz
+  io.github.billsecond.mailcraft
+  it.mijorus.gearlever
 )
 
 NVM_VERSION="v0.40.3"
+
 NPM_GLOBAL_PACKAGES=(
-  @anthropic-ai/claude-code # claude
-  @openai/codex             # codex
-  cline                     # cline
-  omniroute                 # omniroute
+  # AI / coding assistants
+  @anthropic-ai/claude-code  # claude
+  @openai/codex              # codex
+  cline                      # cline
+  omniroute                  # omniroute
+  opencode-ai                # opencode
+
+  # JS/TS tooling
   9router
+  @ast-grep/cli
+  @kilocode/cli
+  @nestjs/cli
+  @tencent-ai/codebuddy-code
+  corepack
+  pnpm
+  repomix
+)
+
+PIP_USER_PACKAGES=(
+  yt-dlp
+  matplotlib
+  numpy
+  requests
+  python-pptx
+  python-docx
+  rich
 )
 
 # ============================================================
@@ -64,7 +131,8 @@ sudo dnf upgrade --refresh -y
 log "Enable RPM Fusion (free + nonfree)"
 sudo dnf install -y \
   "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
-  "https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"
+  "https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm" \
+  || warn "Gagal enable RPM Fusion"
 
 log "Enable Flathub"
 sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -103,6 +171,14 @@ curl -fsS https://dl.brave.com/install.sh | sh || warn "Gagal install Brave"
 log "Install Zed IDE (installer resmi)"
 curl -f https://zed.dev/install.sh | sh || warn "Gagal install Zed"
 
+log "Install Visual Studio Code (repo Microsoft)"
+sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc 2>/dev/null || true
+sudo sh -c 'echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com/yumrepos/vscode\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc" > /etc/yum.repos.d/vscode.repo' 2>/dev/null || true
+sudo dnf install -y code || warn "Gagal install Visual Studio Code"
+
+log "Install Google Cloud CLI (gcloud)"
+sudo dnf install -y google-cloud-cli || warn "Gagal install google-cloud-cli (coba via snap: snap install google-cloud-cli --classic)"
+
 log "Install NVM (Node Version Manager)"
 if [[ ! -d "$HOME/.nvm" ]]; then
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash || warn "Gagal install NVM"
@@ -110,7 +186,6 @@ else
   warn "NVM sudah ada, skip install."
 fi
 
-# Muat nvm untuk sesi ini agar npm install -g tidak butuh sudo
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
@@ -125,18 +200,23 @@ else
   warn "nvm tidak tersedia di sesi ini; lewati npm global."
 fi
 
-# Tambahkan nvm ke .zshrc agar persist setelah reboot
+# Persist nvm di .zshrc
 if [[ -f "$HOME/.zshrc" ]]; then
   if ! grep -q 'export NVM_DIR' "$HOME/.zshrc"; then
     cat >> "$HOME/.zshrc" <<'ZSHRC_EOF'
 
 # NVM
 export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 ZSHRC_EOF
   fi
 fi
+
+log "Install pip packages (user)"
+for pkg in "${PIP_USER_PACKAGES[@]}"; do
+  pip3 install --user "$pkg" || warn "Gagal install (pip): $pkg"
+done
 
 log "Install Oh My Zsh + plugin (autosuggestions, syntax highlighting)"
 if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
@@ -197,4 +277,11 @@ else
 fi
 rm -rf "$tmp"
 
-log "Selesai. Reboot disarankan (driver NVIDIA + grup wireshark/docker baru kepake setelah restart/relogin)."
+log "Catatan aplikasi custom (install manual setelah reboot):"
+warn "- Antigravity CLI & Antigravity-IDE: ada di /opt di Ubuntu, instalasi custom (linuxcapable). Pindahkan folder /opt/antigravity dan /opt/antigravity-ide atau unduh ulang dari sumber resmi."
+warn "- Kiro: ada di /usr/share/kiro (custom). Unduh ulang dari kiro.dev."
+warn "- Free Download Manager: ada di /opt/freedownloadmanager. Unduh ulang dari freedownloadmanager.org."
+warn "- TwinDesk AppImage: sudah ada di ~/AppImages/twindesk.appimage, pindahkan file AppImage ke Fedora."
+warn "- Aplikasi snap (google-cloud-cli): kalau dnf gagal, coba 'snap install google-cloud-cli --classic'."
+
+log "Selesai. Reboot disarankan (driver NVIDIA + grup wireshark/docker baru aktif setelah restart/relogin)."
