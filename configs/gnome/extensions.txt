@@ -1,0 +1,10 @@
+# Enabled GNOME Shell extensions (installed from extensions.gnome.org)
+# Built-in Fedora extension `background-logo@fedorahosted.org` is enabled separately.
+simple-taskbar@sultech
+perfect-fit@ryliov.work.com
+blur-my-shell@aunetx
+just-perfection-desktop@just-perfection
+tilingshell@ferrarodomenico.com
+clipboard-indicator@tudmotu.com
+appindicatorsupport@rgcjonas.gmail.com
+windowgesturesrevived@vanceral.github.io

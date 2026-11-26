@@ -1,0 +1,10 @@
+[Unit]
+Description=Jadwal Mingguan Pemeliharaan Laptop (Level Sistem)
+
+[Timer]
+OnCalendar=Sun *-*-* 09:10:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

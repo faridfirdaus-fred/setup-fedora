@@ -1,0 +1,18 @@
+[Unit]
+Description=OmniRoute AI proxy router
+After=network-online.target graphical-session.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+WatchdogSec=180
+TimeoutStartSec=300
+ExecStart=__NODE_BIN__ __OMNIROUTE_BIN__ serve --no-open --no-tray
+Restart=on-failure
+RestartSec=5
+Environment="PATH=__NODE_DIR__:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=-%h/.omniroute/.env
+
+[Install]
+WantedBy=default.target

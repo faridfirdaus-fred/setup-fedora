@@ -1,0 +1,14 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:20128",
+    "ANTHROPIC_MODEL": "daily",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "planner",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "planner",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "daily",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "quick",
+    "ANTHROPIC_AUTH_TOKEN": "__OMNIROUTE_API_KEY__"
+  },
+  "model": "sonnet",
+  "skipDangerousModePermissionPrompt": true,
+  "theme": "auto"
+}

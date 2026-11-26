@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${1:-get}"
+ARG="${2:-}"
+
+# Find backlight device (prefer intel_backlight)
+if [[ -d /sys/class/backlight/intel_backlight ]]; then
+  DEV="intel_backlight"
+else
+  DEV="$(basename "$(ls -d /sys/class/backlight/* 2>/dev/null | head -n1)")"
+fi
+
+if [[ -z "${DEV:-}" || ! -d "/sys/class/backlight/$DEV" ]]; then
+  echo "No backlight device found" >&2
+  exit 1
+fi
+
+SYS_DIR="/sys/class/backlight/$DEV"
+RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+LOCK_FILE="$RUN_DIR/brightness-zero.lock"
+STATE_FILE="$RUN_DIR/brightness-zero.last"
+NID_FILE="$RUN_DIR/brightness-zero.nid"
+
+exec 200>"$LOCK_FILE"
+flock -x 200
+
+cur="$(<"$SYS_DIR/brightness")"
+max="$(<"$SYS_DIR/max_brightness")"
+min_nz=$(( max / 100 ))
+(( min_nz < 1 )) && min_nz=1
+
+if (( cur == 0 )); then
+  cur_pct=0
+elif (( cur <= min_nz )); then
+  cur_pct=1
+else
+  cur_pct=$(( (cur * 100 + max / 2) / max ))
+  (( cur_pct > 100 )) && cur_pct=100
+fi
+
+case "$ACTION" in
+  get)
+    echo "${cur_pct}% (${cur}/${max})"
+    exit 0
+    ;;
+  down)
+    if (( cur == 0 || cur <= min_nz )); then
+      target=0
+      target_pct=0
+    elif (( cur_pct <= 5 )); then
+      target=$min_nz
+      target_pct=1
+    else
+      target_pct=$(( ((cur_pct - 1) / 5) * 5 ))
+      (( target_pct < 5 )) && target_pct=5
+      target=$(( target_pct * max / 100 ))
+    fi
+    ;;
+  up)
+    if (( cur == 0 )); then
+      target=$min_nz
+      target_pct=1
+    elif (( cur_pct < 5 )); then
+      target_pct=5
+      target=$(( 5 * max / 100 ))
+    else
+      target_pct=$(( ((cur_pct / 5) + 1) * 5 ))
+      (( target_pct > 100 )) && target_pct=100
+      target=$(( target_pct * max / 100 ))
+    fi
+    ;;
+  off)
+    if (( cur > 0 )); then
+      echo "$cur" > "$STATE_FILE"
+    fi
+    target=0
+    target_pct=0
+    ;;
+  toggle)
+    if (( cur == 0 )); then
+      if [[ -f "$STATE_FILE" ]] && [[ "$(<"$STATE_FILE")" =~ ^[0-9]+$ ]]; then
+        saved="$(<"$STATE_FILE")"
+        if (( saved > 0 && saved <= max )); then
+          target=$saved
+        else
+          target=$(( 20 * max / 100 ))
+        fi
+      else
+        target=$(( 20 * max / 100 ))
+      fi
+      if (( target <= min_nz )); then
+        target_pct=1
+      else
+        target_pct=$(( (target * 100 + max / 2) / max ))
+      fi
+    else
+      echo "$cur" > "$STATE_FILE"
+      target=0
+      target_pct=0
+    fi
+    ;;
+  set)
+    if [[ ! "$ARG" =~ ^[0-9]+$ ]] || (( ARG < 0 || ARG > 100 )); then
+      echo "Usage: brightness-zero set <0-100>" >&2
+      exit 1
+    fi
+    target_pct=$ARG
+    if (( target_pct == 0 )); then
+      if (( cur > 0 )); then
+        echo "$cur" > "$STATE_FILE"
+      fi
+      target=0
+    else
+      target=$(( target_pct * max / 100 ))
+      (( target < min_nz )) && target=$min_nz
+    fi
+    ;;
+  *)
+    echo "Usage: brightness-zero {up|down|off|toggle|set <0-100>|get}" >&2
+    exit 1
+    ;;
+esac
+
+# Read Mutter backlight info if available (for keeping GNOME Quick Settings slider in sync)
+mutter_serial=""
+mutter_conn=""
+mutter_min=""
+mutter_val=""
+if command -v busctl >/dev/null 2>&1; then
+  bl_prop="$(busctl --user get-property org.gnome.Mutter.DisplayConfig /org/gnome/Mutter/DisplayConfig org.gnome.Mutter.DisplayConfig Backlight 2>/dev/null || true)"
+  if [[ "$bl_prop" =~ ^\(uaa\{sv\}\)[[:space:]]+([0-9]+)[[:space:]]+.*\"connector\"[[:space:]]+s[[:space:]]+\"([^\"]+)\".*\"min\"[[:space:]]+i[[:space:]]+([0-9]+).*\"value\"[[:space:]]+i[[:space:]]+([0-9]+) ]]; then
+    mutter_serial="${BASH_REMATCH[1]}"
+    mutter_conn="${BASH_REMATCH[2]}"
+    mutter_min="${BASH_REMATCH[3]}"
+    mutter_val="${BASH_REMATCH[4]}"
+  fi
+fi
+
+if (( target == 0 )); then
+  # If Mutter isn't already at its minimum, drop it to minimum first and let its async write settle
+  if [[ -n "$mutter_serial" && -n "$mutter_val" && -n "$mutter_min" ]] && (( mutter_val > mutter_min )); then
+    busctl --user call org.gnome.Mutter.DisplayConfig /org/gnome/Mutter/DisplayConfig org.gnome.Mutter.DisplayConfig SetBacklight usi "$mutter_serial" "$mutter_conn" "$mutter_min" >/dev/null 2>&1 || true
+    sleep 0.08
+  fi
+  brightnessctl -q -d "$DEV" set 0
+else
+  brightnessctl -q -d "$DEV" set "$target"
+  if [[ -n "$mutter_serial" && -n "$mutter_min" ]] && (( target >= mutter_min )); then
+    busctl --user call org.gnome.Mutter.DisplayConfig /org/gnome/Mutter/DisplayConfig org.gnome.Mutter.DisplayConfig SetBacklight usi "$mutter_serial" "$mutter_conn" "$target" >/dev/null 2>&1 || true
+  fi
+fi
+
+# Show a transient, replacing notification when brightness > 0
+if (( target > 0 )) && command -v notify-send >/dev/null 2>&1; then
+  old_id=0
+  if [[ -f "$NID_FILE" ]] && [[ "$(<"$NID_FILE")" =~ ^[0-9]+$ ]]; then
+    old_id="$(<"$NID_FILE")"
+  fi
+  if (( old_id > 0 )); then
+    new_id="$(notify-send -e -t 1000 -a "Brightness" -i display-brightness-symbolic -p -r "$old_id" "Brightness: ${target_pct}%" 2>/dev/null || true)"
+  else
+    new_id="$(notify-send -e -t 1000 -a "Brightness" -i display-brightness-symbolic -p "Brightness: ${target_pct}%" 2>/dev/null || true)"
+  fi
+  if [[ "${new_id:-}" =~ ^[0-9]+$ ]]; then
+    echo "$new_id" > "$NID_FILE"
+  fi
+fi

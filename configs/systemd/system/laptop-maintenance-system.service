@@ -1,0 +1,8 @@
+[Unit]
+Description=Pemeliharaan Otomatis Laptop (Level Sistem: DNF, Journal, Flatpak)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/laptop-maintenance-system
+Nice=19
+IOSchedulingClass=idle

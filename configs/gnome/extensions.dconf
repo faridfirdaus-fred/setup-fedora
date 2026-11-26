@@ -1,0 +1,41 @@
+[blur-my-shell]
+settings-version=10
+
+[blur-my-shell/popup]
+screenshot-corner-radius=36
+
+[simple-taskbar]
+active-panel-axis='horizontal'
+active-panel-mode='taskbar'
+default-gnome-panel=false
+macos-dock-theme-enabled=false
+panel-axis-profiles-initialized=true
+panel-mode-profiles-initialized=true
+panel-profile-transition=false
+start-menu-displaced-overlay-key=['Super']
+start-menu-pinned-apps=['brave-browser.desktop', 'com.spotify.Client.desktop', 'orca.desktop', 'org.gnome.Ptyxis.desktop']
+taskbar-horizontal-settings=@a{sv} {}
+taskbar-horizontal-settings-saved=true
+taskbar-mode-settings=@a{sv} {}
+taskbar-mode-settings-saved=true
+windows-10-theme-enabled=false
+windows-xp-theme-enabled=false
+
+[simple-taskbar/dock]
+blur-my-shell-dock-mode='dock'
+dock-mode=false
+
+[system-monitor]
+show-cpu=false
+show-download=false
+show-memory=false
+show-swap=false
+show-upload=false
+
+[tilingshell]
+cycle-layouts-backward=['<Shift>']
+last-version-name-installed='18.0'
+layouts-json='[{"id":"Layout 1","tiles":[{"x":0,"y":0,"width":0.22,"height":0.5,"groups":[1,2]},{"x":0,"y":0.5,"width":0.22,"height":0.5,"groups":[1,2]},{"x":0.22,"y":0,"width":0.56,"height":1,"groups":[2,3]},{"x":0.78,"y":0,"width":0.22,"height":0.5,"groups":[3,4]},{"x":0.78,"y":0.5,"width":0.22,"height":0.5,"groups":[3,4]}]},{"id":"Layout 2","tiles":[{"x":0,"y":0,"width":0.22,"height":1,"groups":[1]},{"x":0.22,"y":0,"width":0.56,"height":1,"groups":[1,2]},{"x":0.78,"y":0,"width":0.22,"height":1,"groups":[2]}]},{"id":"Layout 3","tiles":[{"x":0,"y":0,"width":0.33,"height":1,"groups":[1]},{"x":0.33,"y":0,"width":0.67,"height":1,"groups":[1]}]},{"id":"Layout 4","tiles":[{"x":0,"y":0,"width":0.67,"height":1,"groups":[1]},{"x":0.67,"y":0,"width":0.33,"height":1,"groups":[1]}]}]'
+overridden-settings="{\"org.gnome.mutter.keybindings\":{\"toggle-tiled-right\":\"['<Super>Right']\",\"toggle-tiled-left\":\"['<Super>Left']\"},\"org.gnome.desktop.wm.keybindings\":{\"maximize\":\"['<Super>Up']\",\"unmaximize\":\"['<Super>Down', '<Alt>F5']\"},\"org.gnome.mutter\":{\"edge-tiling\":\"true\"}}"
+selected-layouts=[['Layout 1'], ['Layout 1']]
+window-use-custom-border-color=false

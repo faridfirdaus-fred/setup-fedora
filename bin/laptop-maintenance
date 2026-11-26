@@ -1,0 +1,614 @@
+#!/usr/bin/env bash
+# laptop-maintenance - Pemeliharaan otomatis laptop (Fedora Workstation)
+# Membersihkan cache aplikasi, Trash (>N hari), cache package manager, dan lainnya secara aman.
+
+set -euo pipefail
+
+# Pastikan PATH lengkap saat dijalankan dari systemd user timer
+export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+if ! command -v npm >/dev/null 2>&1 && [[ -d "$HOME/.nvm/versions/node" ]]; then
+  latest_node_bin="$(find "$HOME/.nvm/versions/node" -maxdepth 2 -type d -name bin 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [[ -n "$latest_node_bin" ]]; then
+    export PATH="$latest_node_bin:$PATH"
+  fi
+fi
+
+# Konfigurasi default
+MODE="user"
+DRY_RUN=0
+TRASH_DAYS=14
+EMPTY_TRASH=0
+AGGRESSIVE=0
+QUIET=0
+SHOW_STATUS=0
+
+STATE_DIR="$HOME/.local/state/laptop-maintenance"
+LOG_FILE="$STATE_DIR/maintenance.log"
+SYSTEM_SCRIPT_INSTALLED="/usr/local/sbin/laptop-maintenance-system"
+SYSTEM_SCRIPT_LOCAL="$HOME/.config/laptop-maintenance/laptop-maintenance-system"
+
+mkdir -p "$STATE_DIR"
+
+usage() {
+  cat <<'EOF'
+Penggunaan: laptop-maintenance [OPSI]
+
+Opsi:
+  --user            Jalankan pembersihan level user (default)
+  --system          Jalankan pembersihan level sistem (DNF, journalctl, Flatpak unused; butuh sudo)
+  --all             Jalankan pembersihan user + sistem
+  -n, --dry-run     Simulasi saja tanpa menghapus file apa pun
+  --trash-days N    Hapus isi Trash yang berumur lebih dari N hari (default: 14)
+  --empty-trash     Kosongkan seluruh Trash tanpa melihat umur
+  --aggressive      Hapus seluruh cache browser, Flatpak, dan thumbnails tanpa batas umur
+  --status          Tampilkan ukuran cache/Trash/journal saat ini dan status timer
+  --quiet           Jangan kirim notifikasi desktop
+  -h, --help        Tampilkan bantuan ini
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user) MODE="user"; shift ;;
+    --system) MODE="system"; shift ;;
+    --all) MODE="all"; shift ;;
+    -n|--dry-run) DRY_RUN=1; shift ;;
+    --trash-days)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "Error: --trash-days butuh angka bulat >= 0" >&2; exit 2; }
+      TRASH_DAYS="$2"; shift 2 ;;
+    --empty-trash) EMPTY_TRASH=1; shift ;;
+    --aggressive) AGGRESSIVE=1; shift ;;
+    --status) SHOW_STATUS=1; shift ;;
+    --quiet) QUIET=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Opsi tidak dikenal: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+human_bytes() {
+  local b="${1:-0}"
+  if command -v numfmt >/dev/null 2>&1; then
+    numfmt --to=iec-i --suffix=B "$b" 2>/dev/null || echo "${b}B"
+  else
+    echo "${b}B"
+  fi
+}
+
+path_bytes() {
+  local p="$1"
+  if [[ -e "$p" ]]; then
+    local val
+    val="$(du -sb "$p" 2>/dev/null | awk '{print $1}' || true)"
+    echo "${val:-0}"
+  else
+    echo 0
+  fi
+}
+
+log_line() {
+  local msg="$1"
+  printf '%s\n' "$msg"
+  if [[ "$DRY_RUN" -eq 0 && "$SHOW_STATUS" -eq 0 ]]; then
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$msg" >> "$LOG_FILE"
+  fi
+}
+
+rotate_log() {
+  if [[ -f "$LOG_FILE" ]]; then
+    local lines
+    lines="$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)"
+    if [[ "$lines" -gt 1000 ]]; then
+      tail -n 600 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    fi
+  fi
+}
+
+show_status() {
+  echo "=== Status Pemeliharaan Laptop ==="
+  echo "Disk:"
+  df -h / /home 2>/dev/null | awk 'NR==1 || !seen[$1]++'
+  echo ""
+  echo "Ukuran cache & sampah utama:"
+  for p in \
+    "$HOME/.local/share/Trash" \
+    "$HOME/.npm" \
+    "$HOME/.cache/BraveSoftware" \
+    "$HOME/.cache/mozilla" \
+    "$HOME/.var/app" \
+    "$HOME/.cache/libdnf5" \
+    "$HOME/.cache/gnome-software" \
+    "$HOME/.cache/pip" \
+    "$HOME/.cache/flatpak" \
+    "$HOME/.cache/thumbnails" \
+    "/var/cache/libdnf5"; do
+    if [[ -e "$p" ]]; then
+      local sz
+      sz="$(du -sh "$p" 2>/dev/null | awk '{print $1}' || true)"
+      printf '  %-42s %s\n' "$p" "${sz:-0}"
+    fi
+  done
+  if command -v journalctl >/dev/null 2>&1; then
+    printf '  %-42s %s\n' "systemd journal" "$(journalctl --disk-usage 2>/dev/null | sed 's/.*take up //;s/ in the file system\.//')"
+  fi
+  echo ""
+  echo "User timer (laptop-maintenance.timer):"
+  systemctl --user list-timers laptop-maintenance.timer --all --no-pager 2>/dev/null || echo "  (belum terpasang)"
+  echo ""
+  echo "System timer (laptop-maintenance-system.timer):"
+  systemctl list-timers laptop-maintenance-system.timer --all --no-pager 2>/dev/null || echo "  (belum terpasang)"
+  if [[ -f "$LOG_FILE" ]]; then
+    echo ""
+    echo "Log terakhir ($LOG_FILE):"
+    tail -n 12 "$LOG_FILE"
+  fi
+}
+
+if [[ "$SHOW_STATUS" -eq 1 ]]; then
+  show_status
+  exit 0
+fi
+
+TOTAL_FREED=0
+
+add_freed() {
+  local delta="${1:-0}"
+  if [[ "$delta" -gt 0 ]]; then
+    TOTAL_FREED=$(( TOTAL_FREED + delta ))
+  fi
+}
+
+# Hapus file dalam direktori (opsional: lebih tua dari N hari) dan hitung byte
+clean_dir_files() {
+  local dir="$1"
+  local min_days="$2"   # 0 = semua file, >0 = file dengan mtime > min_days
+  local label="$3"
+  shift 3 || true
+  # Argumen opsional berikutnya adalah nama subdirektori yang dikecualikan
+
+  [[ -d "$dir" ]] || return 0
+
+  local find_args=("$dir")
+  for excl in "$@"; do
+    find_args+=(-path "$dir/$excl" -prune -o)
+  done
+
+  local bytes=0
+  local count=0
+  if [[ "$min_days" -gt 0 ]]; then
+    while IFS=$'\t' read -r sz fpath; do
+      [[ -n "$fpath" ]] || continue
+      bytes=$(( bytes + sz ))
+      count=$(( count + 1 ))
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        rm -f -- "$fpath" 2>/dev/null || true
+      fi
+    done < <(find "${find_args[@]}" -type f -mtime "+$((min_days - 1))" -printf '%s\t%p\n' 2>/dev/null || true)
+  else
+    while IFS=$'\t' read -r sz fpath; do
+      [[ -n "$fpath" ]] || continue
+      bytes=$(( bytes + sz ))
+      count=$(( count + 1 ))
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        rm -f -- "$fpath" 2>/dev/null || true
+      fi
+    done < <(find "${find_args[@]}" -type f -printf '%s\t%p\n' 2>/dev/null || true)
+  fi
+
+  if [[ "$DRY_RUN" -eq 0 && "$count" -gt 0 ]]; then
+    find "$dir" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+  fi
+
+  if [[ "$count" -gt 0 ]]; then
+    add_freed "$bytes"
+    local verb="Dibersihkan"
+    [[ "$DRY_RUN" -eq 1 ]] && verb="Akan dibersihkan"
+    log_line "  - $label: $verb $count file ($(human_bytes "$bytes"))"
+  else
+    log_line "  - $label: tidak ada file yang perlu dibersihkan"
+  fi
+}
+
+clean_trash() {
+  local trash_dir="$HOME/.local/share/Trash"
+  [[ -d "$trash_dir" ]] || { log_line "  - Trash: tidak ditemukan"; return 0; }
+
+  local result
+  result="$(python3 - "$trash_dir" "$TRASH_DAYS" "$EMPTY_TRASH" "$DRY_RUN" <<'PY'
+import os
+import shutil
+import sys
+from datetime import datetime, timedelta
+
+trash_dir = sys.argv[1]
+trash_days = int(sys.argv[2])
+empty_all = sys.argv[3] == "1"
+dry_run = sys.argv[4] == "1"
+
+files_dir = os.path.join(trash_dir, "files")
+info_dir = os.path.join(trash_dir, "info")
+expunged_dir = os.path.join(trash_dir, "expunged")
+
+def path_size(p):
+    if os.path.islink(p):
+        try:
+            return os.lstat(p).st_size
+        except OSError:
+            return 0
+    if os.path.isfile(p):
+        try:
+            return os.path.getsize(p)
+        except OSError:
+            return 0
+    total = 0
+    for root, dirs, files in os.walk(p, followlinks=False):
+        for fn in files:
+            fp = os.path.join(root, fn)
+            try:
+                total += os.lstat(fp).st_size
+            except OSError:
+                pass
+    return total
+
+def remove_entry(p):
+    if os.path.islink(p) or os.path.isfile(p):
+        os.unlink(p)
+    elif os.path.isdir(p):
+        shutil.rmtree(p)
+
+def parse_deletion_date(info_path):
+    try:
+        with open(info_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("DeletionDate="):
+                    val = line.split("=", 1)[1].strip()
+                    return datetime.fromisoformat(val)
+    except Exception:
+        return None
+    return None
+
+cutoff = datetime.now() - timedelta(days=trash_days)
+removed_count = 0
+removed_bytes = 0
+kept_count = 0
+kept_bytes = 0
+
+if os.path.isdir(files_dir):
+    for name in os.listdir(files_dir):
+        fpath = os.path.join(files_dir, name)
+        ipath = os.path.join(info_dir, name + ".trashinfo")
+        sz = path_size(fpath)
+
+        should_delete = empty_all
+        if not should_delete:
+            dt = parse_deletion_date(ipath)
+            if dt is None:
+                try:
+                    dt = datetime.fromtimestamp(os.lstat(fpath).st_mtime)
+                except OSError:
+                    dt = datetime.now()
+            if dt <= cutoff:
+                should_delete = True
+
+        if should_delete:
+            removed_count += 1
+            removed_bytes += sz
+            if not dry_run:
+                try:
+                    remove_entry(fpath)
+                except OSError:
+                    pass
+                if os.path.exists(ipath) or os.path.islink(ipath):
+                    try:
+                        os.unlink(ipath)
+                    except OSError:
+                        pass
+        else:
+            kept_count += 1
+            kept_bytes += sz
+
+# Bersihkan .trashinfo yatim (tanpa file terkait)
+if os.path.isdir(info_dir):
+    for iname in os.listdir(info_dir):
+        if not iname.endswith(".trashinfo"):
+            continue
+        base = iname[:-len(".trashinfo")]
+        if not os.path.lexists(os.path.join(files_dir, base)):
+            if not dry_run:
+                try:
+                    os.unlink(os.path.join(info_dir, iname))
+                except OSError:
+                    pass
+
+# Bersihkan direktori expunged
+if os.path.isdir(expunged_dir):
+    for ename in os.listdir(expunged_dir):
+        epath = os.path.join(expunged_dir, ename)
+        sz = path_size(epath)
+        removed_bytes += sz
+        if not dry_run:
+            try:
+                remove_entry(epath)
+            except OSError:
+                pass
+
+print(f"{removed_count}\t{removed_bytes}\t{kept_count}\t{kept_bytes}")
+PY
+)"
+
+  IFS=$'\t' read -r rm_cnt rm_bytes kept_cnt kept_bytes <<< "$result"
+  add_freed "$rm_bytes"
+
+  local verb="Dihapus"
+  [[ "$DRY_RUN" -eq 1 ]] && verb="Akan dihapus"
+  if [[ "$EMPTY_TRASH" -eq 1 ]]; then
+    log_line "  - Trash (kosongkan semua): $verb $rm_cnt item ($(human_bytes "$rm_bytes"))"
+  else
+    log_line "  - Trash (>${TRASH_DAYS} hari): $verb $rm_cnt item ($(human_bytes "$rm_bytes")), dipertahankan $kept_cnt item (<=${TRASH_DAYS} hari, $(human_bytes "$kept_bytes"))"
+  fi
+}
+
+clean_browsers() {
+  local brave_running=0
+  pgrep -x brave >/dev/null 2>&1 && brave_running=1
+  local brave_days=0
+  if [[ "$brave_running" -eq 1 && "$AGGRESSIVE" -eq 0 ]]; then
+    brave_days=3
+  fi
+
+  local brave_base="$HOME/.cache/BraveSoftware/Brave-Browser"
+  if [[ -d "$brave_base" ]]; then
+    local found_brave=0
+    for prof in "$brave_base"/*; do
+      [[ -d "$prof" ]] || continue
+      for sub in "Cache" "Code Cache"; do
+        if [[ -d "$prof/$sub" ]]; then
+          found_brave=1
+          local note="Brave ($(basename "$prof")/$sub)"
+          [[ "$brave_days" -gt 0 ]] && note="$note [berjalan, >${brave_days}h]"
+          clean_dir_files "$prof/$sub" "$brave_days" "$note"
+        fi
+      done
+    done
+    [[ "$found_brave" -eq 0 ]] && log_line "  - Brave cache: tidak ada direktori cache"
+  fi
+
+  local ff_running=0
+  pgrep -x firefox >/dev/null 2>&1 && ff_running=1
+  local ff_days=0
+  if [[ "$ff_running" -eq 1 && "$AGGRESSIVE" -eq 0 ]]; then
+    ff_days=3
+  fi
+
+  local ff_base="$HOME/.cache/mozilla/firefox"
+  if [[ -d "$ff_base" ]]; then
+    for prof in "$ff_base"/*; do
+      [[ -d "$prof" ]] || continue
+      for sub in "cache2" "thumbnails" "startupCache"; do
+        if [[ -d "$prof/$sub" ]]; then
+          local note="Firefox ($(basename "$prof")/$sub)"
+          [[ "$ff_days" -gt 0 ]] && note="$note [berjalan, >${ff_days}h]"
+          clean_dir_files "$prof/$sub" "$ff_days" "$note"
+        fi
+      done
+    done
+  fi
+
+  for chrome_dir in "$HOME/.cache/chromium" "$HOME/.cache/google-chrome"; do
+    [[ -d "$chrome_dir" ]] || continue
+    for prof in "$chrome_dir"/*; do
+      [[ -d "$prof/Cache" ]] || continue
+      clean_dir_files "$prof/Cache" 3 "$(basename "$chrome_dir") ($(basename "$prof")/Cache)"
+    done
+  done
+}
+
+clean_flatpak_user_caches() {
+  local base="$HOME/.var/app"
+  [[ -d "$base" ]] || return 0
+  local days=7
+  [[ "$AGGRESSIVE" -eq 1 ]] && days=0
+
+  local total_before=0
+  local total_files=0
+  for app_cache in "$base"/*/cache; do
+    [[ -d "$app_cache" ]] || continue
+    local app_name
+    app_name="$(basename "$(dirname "$app_cache")")"
+    # Jangan hapus mesa_shader_cache & fontconfig agar performa rendering tetap mulus
+    local b=0
+    local c=0
+    if [[ "$days" -gt 0 ]]; then
+      while IFS=$'\t' read -r sz fp; do
+        [[ -n "$fp" ]] || continue
+        b=$(( b + sz ))
+        c=$(( c + 1 ))
+        [[ "$DRY_RUN" -eq 0 ]] && rm -f -- "$fp" 2>/dev/null || true
+      done < <(find "$app_cache" \
+        \( -path "$app_cache/mesa_shader_cache" -o -path "$app_cache/fontconfig" \) -prune -o \
+        -type f -mtime "+$((days - 1))" -printf '%s\t%p\n' 2>/dev/null || true)
+    else
+      while IFS=$'\t' read -r sz fp; do
+        [[ -n "$fp" ]] || continue
+        b=$(( b + sz ))
+        c=$(( c + 1 ))
+        [[ "$DRY_RUN" -eq 0 ]] && rm -f -- "$fp" 2>/dev/null || true
+      done < <(find "$app_cache" \
+        \( -path "$app_cache/mesa_shader_cache" -o -path "$app_cache/fontconfig" \) -prune -o \
+        -type f -printf '%s\t%p\n' 2>/dev/null || true)
+    fi
+    if [[ "$DRY_RUN" -eq 0 && "$c" -gt 0 ]]; then
+      find "$app_cache" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    fi
+    if [[ "$c" -gt 0 ]]; then
+      total_before=$(( total_before + b ))
+      total_files=$(( total_files + c ))
+      add_freed "$b"
+      local verb="Dibersihkan"
+      [[ "$DRY_RUN" -eq 1 ]] && verb="Akan dibersihkan"
+      log_line "  - Flatpak cache ($app_name): $verb $c file ($(human_bytes "$b"))"
+    fi
+  done
+  if [[ "$total_files" -eq 0 ]]; then
+    log_line "  - Flatpak app caches (~/.var/app/*/cache): tidak ada file >${days} hari yang perlu dibersihkan"
+  fi
+}
+
+clean_desktop_caches() {
+  # Catatan penting: ~/.cache/orca TIDAK disentuh karena berisi launcher orca-ide!
+  local thumb_days=30
+  [[ "$AGGRESSIVE" -eq 1 ]] && thumb_days=0
+
+  clean_dir_files "$HOME/.cache/thumbnails" "$thumb_days" "Thumbnails (>${thumb_days} hari)"
+  clean_dir_files "$HOME/.cache/gnome-desktop-thumbnailer" 14 "GNOME thumbnailer"
+  clean_dir_files "$HOME/.cache/gnome-software" 14 "GNOME Software cache"
+  clean_dir_files "$HOME/.cache/libdnf5" 0 "User libdnf5 cache"
+  clean_dir_files "$HOME/.cache/flatpak" 0 "User Flatpak cache"
+  clean_dir_files "$HOME/.cache/gstreamer-1.0" 30 "GStreamer cache"
+}
+
+clean_dev_caches() {
+  # npm cache (~/.npm/_cacache)
+  if command -v npm >/dev/null 2>&1 && [[ -d "$HOME/.npm/_cacache" ]]; then
+    local before after delta
+    before="$(path_bytes "$HOME/.npm/_cacache")"
+    if [[ "$before" -gt 0 ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        add_freed "$before"
+        log_line "  - npm cache: Akan dibersihkan ($(human_bytes "$before"))"
+      else
+        npm cache clean --force >/dev/null 2>&1 || true
+        after="$(path_bytes "$HOME/.npm/_cacache")"
+        delta=$(( before - after ))
+        [[ "$delta" -lt 0 ]] && delta=0
+        add_freed "$delta"
+        log_line "  - npm cache: Dibersihkan ($(human_bytes "$delta"))"
+      fi
+    fi
+  fi
+
+  # pnpm store
+  if command -v pnpm >/dev/null 2>&1 && { [[ -d "$HOME/.local/share/pnpm/store" ]] || [[ -d "$HOME/.pnpm-store" ]]; }; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log_line "  - pnpm store: Akan dijalankan 'pnpm store prune'"
+    else
+      pnpm store prune >/dev/null 2>&1 || true
+      log_line "  - pnpm store: Selesai dipangkas"
+    fi
+  fi
+
+  # pip cache
+  if [[ -d "$HOME/.cache/pip" ]]; then
+    local pip_before
+    pip_before="$(path_bytes "$HOME/.cache/pip")"
+    if [[ "$pip_before" -gt 0 ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        add_freed "$pip_before"
+        log_line "  - pip cache: Akan dibersihkan ($(human_bytes "$pip_before"))"
+      else
+        if command -v pip3 >/dev/null 2>&1; then
+          pip3 cache purge >/dev/null 2>&1 || rm -rf "$HOME/.cache/pip"/*
+        else
+          rm -rf "$HOME/.cache/pip"/*
+        fi
+        local pip_after pip_delta
+        pip_after="$(path_bytes "$HOME/.cache/pip")"
+        pip_delta=$(( pip_before - pip_after ))
+        [[ "$pip_delta" -lt 0 ]] && pip_delta=0
+        add_freed "$pip_delta"
+        log_line "  - pip cache: Dibersihkan ($(human_bytes "$pip_delta"))"
+      fi
+    fi
+  fi
+
+  # uv cache
+  if command -v uv >/dev/null 2>&1 && [[ -d "$HOME/.cache/uv" ]]; then
+    local uv_before
+    uv_before="$(path_bytes "$HOME/.cache/uv")"
+    if [[ "$uv_before" -gt 1048576 ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log_line "  - uv cache: Akan dijalankan 'uv cache prune' (saat ini $(human_bytes "$uv_before"))"
+      else
+        uv cache prune >/dev/null 2>&1 || true
+        local uv_after uv_delta
+        uv_after="$(path_bytes "$HOME/.cache/uv")"
+        uv_delta=$(( uv_before - uv_after ))
+        [[ "$uv_delta" -lt 0 ]] && uv_delta=0
+        add_freed "$uv_delta"
+        log_line "  - uv cache: Dipangkas ($(human_bytes "$uv_delta"))"
+      fi
+    fi
+  fi
+
+  # Podman rootless dangling images & build cache (aman: tidak menghapus container/image aktif)
+  if command -v podman >/dev/null 2>&1; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log_line "  - Podman (rootless): Akan menjalankan prune dangling image & build cache"
+    else
+      podman image prune -f >/dev/null 2>&1 || true
+      podman builder prune -f >/dev/null 2>&1 || true
+      log_line "  - Podman (rootless): Dangling image & build cache diperiksa"
+    fi
+  fi
+}
+
+run_user_maintenance() {
+  local mode_tag=""
+  [[ "$DRY_RUN" -eq 1 ]] && mode_tag=" [DRY-RUN]"
+  log_line "=== Pemeliharaan User Dimulai${mode_tag} ($(date '+%Y-%m-%d %H:%M:%S')) ==="
+
+  clean_trash
+  clean_browsers
+  clean_flatpak_user_caches
+  clean_desktop_caches
+  clean_dev_caches
+
+  local summary_verb="Total ruang dibebaskan"
+  [[ "$DRY_RUN" -eq 1 ]] && summary_verb="Perkiraan ruang yang akan dibebaskan"
+  local freed_hr
+  freed_hr="$(human_bytes "$TOTAL_FREED")"
+  local disk_avail
+  disk_avail="$(df -h "$HOME" | awk 'NR==2 {print $4 " tersedia (" $5 " terpakai)"}')"
+
+  log_line "=== Selesai: ${summary_verb}: ${freed_hr} | Disk: ${disk_avail} ==="
+  rotate_log
+
+  if [[ "$DRY_RUN" -eq 0 && "$QUIET" -eq 0 && -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -a "Laptop Maintenance" "Pemeliharaan Laptop Selesai" \
+      "Ruang dibebaskan: ${freed_hr}\nDisk: ${disk_avail}" >/dev/null 2>&1 || true
+  fi
+}
+
+run_system_maintenance() {
+  local sys_script=""
+  if [[ -x "$SYSTEM_SCRIPT_INSTALLED" ]]; then
+    sys_script="$SYSTEM_SCRIPT_INSTALLED"
+  elif [[ -x "$SYSTEM_SCRIPT_LOCAL" ]]; then
+    sys_script="$SYSTEM_SCRIPT_LOCAL"
+  else
+    echo "Error: script pemeliharaan sistem tidak ditemukan." >&2
+    exit 1
+  fi
+
+  local args=()
+  [[ "$DRY_RUN" -eq 1 ]] && args+=(--dry-run)
+
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$sys_script" "${args[@]}"
+  else
+    sudo "$sys_script" "${args[@]}"
+  fi
+}
+
+case "$MODE" in
+  user)
+    run_user_maintenance
+    ;;
+  system)
+    run_system_maintenance
+    ;;
+  all)
+    run_user_maintenance
+    echo ""
+    run_system_maintenance
+    ;;
+esac

@@ -1,0 +1,8 @@
+[Unit]
+Description=Pemeliharaan Otomatis Laptop (User Cache & Trash)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/laptop-maintenance --user
+Nice=19
+IOSchedulingClass=idle

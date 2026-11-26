@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# laptop-maintenance-system - Pemeliharaan otomatis level sistem (root) untuk Fedora
+# Dipasang ke /usr/local/sbin/laptop-maintenance-system dan dijalankan oleh systemd system timer.
+
+set -euo pipefail
+
+DRY_RUN=0
+JOURNAL_DAYS="14d"
+JOURNAL_SIZE="200M"
+LOG_FILE="/var/log/laptop-maintenance-system.log"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|--dry-run) DRY_RUN=1; shift ;;
+    -h|--help)
+      echo "Penggunaan: laptop-maintenance-system [--dry-run]"
+      exit 0 ;;
+    *) echo "Opsi tidak dikenal: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ "$DRY_RUN" -eq 0 && "$(id -u)" -ne 0 ]]; then
+  echo "Error: harus dijalankan sebagai root (gunakan sudo)." >&2
+  exit 1
+fi
+
+log_line() {
+  local msg="$1"
+  printf '%s\n' "$msg"
+  if [[ "$DRY_RUN" -eq 0 && -w "$(dirname "$LOG_FILE")" ]]; then
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$msg" >> "$LOG_FILE"
+  fi
+}
+
+mode_tag=""
+[[ "$DRY_RUN" -eq 1 ]] && mode_tag=" [DRY-RUN]"
+log_line "=== Pemeliharaan Sistem Dimulai${mode_tag} ($(date '+%Y-%m-%d %H:%M:%S')) ==="
+
+# 1. DNF5 / DNF cache
+if command -v dnf5 >/dev/null 2>&1; then
+  dnf_sz="$(du -sh /var/cache/libdnf5 2>/dev/null | awk '{print $1}' || true)"
+  dnf_sz="${dnf_sz:-0}"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log_line "  - DNF5 cache (/var/cache/libdnf5): Akan dibersihkan (saat ini $dnf_sz)"
+  else
+    dnf5 clean all >/dev/null 2>&1 || true
+    dnf_after="$(du -sh /var/cache/libdnf5 2>/dev/null | awk '{print $1}' || true)"
+    dnf_after="${dnf_after:-0}"
+    log_line "  - DNF5 cache: Dibersihkan ($dnf_sz -> $dnf_after)"
+  fi
+elif command -v dnf >/dev/null 2>&1; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log_line "  - DNF cache: Akan dibersihkan"
+  else
+    dnf clean all >/dev/null 2>&1 || true
+    log_line "  - DNF cache: Dibersihkan"
+  fi
+fi
+
+# 2. Systemd Journal vacuum
+if command -v journalctl >/dev/null 2>&1; then
+  j_before="$(journalctl --disk-usage 2>/dev/null | sed 's/.*take up //;s/ in the file system\.//' || echo 'unknown')"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log_line "  - Systemd journal: Akan dipangkas (> $JOURNAL_DAYS / maks $JOURNAL_SIZE, saat ini $j_before)"
+  else
+    journalctl --vacuum-time="$JOURNAL_DAYS" --vacuum-size="$JOURNAL_SIZE" >/dev/null 2>&1 || true
+    j_after="$(journalctl --disk-usage 2>/dev/null | sed 's/.*take up //;s/ in the file system\.//' || echo 'unknown')"
+    log_line "  - Systemd journal: Dipangkas ($j_before -> $j_after)"
+  fi
+fi
+
+# 3. Flatpak unused runtimes (sistem)
+if command -v flatpak >/dev/null 2>&1; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    unused_out="$(flatpak uninstall --unused --assumeno 2>/dev/null || true)"
+    if [[ -n "$unused_out" ]]; then
+      log_line "  - Flatpak unused runtimes: Ada runtime tidak terpakai yang akan dihapus"
+    else
+      log_line "  - Flatpak unused runtimes: Tidak ada runtime tidak terpakai"
+    fi
+  else
+    flatpak uninstall --unused -y --noninteractive >/dev/null 2>&1 || true
+    log_line "  - Flatpak unused runtimes: Diperiksa & dibersihkan"
+  fi
+fi
+
+# 4. systemd-tmpfiles clean (sesuai kebijakan resmi Fedora)
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log_line "  - systemd-tmpfiles: Akan menjalankan 'systemd-tmpfiles --clean'"
+  else
+    systemd-tmpfiles --clean >/dev/null 2>&1 || true
+    log_line "  - systemd-tmpfiles: Selesai dibersihkan"
+  fi
+fi
+
+# 5. Coredump lama (> 7 hari)
+if [[ -d /var/lib/systemd/coredump ]]; then
+  cd_cnt="$(find /var/lib/systemd/coredump -type f -mtime +6 2>/dev/null | wc -l || echo 0)"
+  if [[ "$cd_cnt" -gt 0 ]]; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log_line "  - Coredump (>7 hari): Akan dihapus $cd_cnt file"
+    else
+      find /var/lib/systemd/coredump -type f -mtime +6 -delete 2>/dev/null || true
+      log_line "  - Coredump (>7 hari): Dihapus $cd_cnt file"
+    fi
+  else
+    log_line "  - Coredump (>7 hari): tidak ada"
+  fi
+fi
+
+# 6. Docker daemon (jika sedang aktif; hanya dangling image & build cache >7 hari)
+if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker 2>/dev/null; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log_line "  - Docker: Akan menjalankan prune dangling image & build cache (>7 hari)"
+  else
+    docker image prune -f >/dev/null 2>&1 || true
+    docker builder prune -f --filter "until=168h" >/dev/null 2>&1 || true
+    log_line "  - Docker: Dangling image & build cache diperiksa"
+  fi
+fi
+
+disk_avail="$(df -h / | awk 'NR==2 {print $4 " tersedia (" $5 " terpakai)"}')"
+log_line "=== Pemeliharaan Sistem Selesai | Disk /: ${disk_avail} ==="

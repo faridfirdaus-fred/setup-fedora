@@ -1,0 +1,32 @@
+{
+  "notes": "Reference OmniRoute combo fallback chains (no credentials/UUIDs). Create via Dashboard (http://localhost:20128) or REST API (/api/combos) after adding upstream provider connections.",
+  "combos": [
+    {
+      "name": "daily",
+      "strategy": "priority",
+      "models": [
+        "agy/gemini-4-neon-xhigh",
+        "agy/gemini-4-neon-high",
+        "agy/gemini-4-carbon-high",
+        "agy/gemini-4-hydrogen-xhigh"
+      ]
+    },
+    {
+      "name": "planner",
+      "strategy": "priority",
+      "models": [
+        "agy/gemini-4-carbon-high",
+        "agy/gemini-4-argon-high",
+        "agy/claude-opus-5-5-high"
+      ]
+    },
+    {
+      "name": "quick",
+      "strategy": "priority",
+      "models": [
+        "agy/gemini-4-hydrogen-xhigh",
+        "agy/gemini-3.8-flash-high"
+      ]
+    }
+  ]
+}

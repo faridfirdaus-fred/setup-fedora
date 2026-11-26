@@ -1,0 +1,15 @@
+# Local secrets & runtime state
+.env
+*.env.local
+*secret*
+*token*
+*.sqlite
+*.db
+
+# Backups & caches
+*.bak
+*.bak.*
+*.orig
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,98 @@
+# Mono Minimal — Clean Black & White GRUB2 Theme
+# Designed for Fedora + Windows Dual Boot (1920x1080 responsive)
+
+title-text: ""
+desktop-color: "#000000"
+
+terminal-font: "Geist Mono Regular 14"
+terminal-box: "terminal_box_*.png"
+terminal-left: "10%"
+terminal-top: "12%"
+terminal-width: "80%"
+terminal-height: "76%"
+terminal-border: "0"
+
+# --- Main Title ---
++ label {
+    left = 50%-560
+    top = 50%-224
+    width = 1120
+    height = 38
+    align = "left"
+    font = "Geist SemiBold Regular 28"
+    color = "#FFFFFF"
+    text = "Select Operating System"
+}
+
+# --- Top Swiss Accent Hairline ---
++ image {
+    left = 50%-560
+    top = 50%-174
+    width = 1120
+    height = 1
+    file = "divider_top.png"
+}
+
+# --- Boot Menu ---
++ boot_menu {
+    left = 50%-560
+    top = 50%-148
+    width = 1120
+    height = 302
+
+    item_font = "Geist Regular Regular 18"
+    item_color = "#8A8A8A"
+    selected_item_font = "Geist Medium Regular 18"
+    selected_item_color = "#000000"
+
+    icon_width = 28
+    icon_height = 28
+    item_icon_space = 16
+    item_height = 54
+    item_padding = 8
+    item_spacing = 8
+
+    selected_item_pixmap_style = "select_*.png"
+
+    scrollbar = true
+    scrollbar_width = 3
+    scrollbar_thumb = "scrollbar_thumb_*.png"
+}
+
+# --- Auto-Boot Countdown Label ---
++ label {
+    id = "__timeout__"
+    left = 50%-560
+    top = 50%+178
+    width = 1120
+    height = 20
+    align = "left"
+    font = "Geist Mono Regular 12"
+    color = "#909090"
+    text = "AUTO-BOOT IN %ds"
+}
+
+# --- Minimal 2px Linear Progress Bar ---
++ progress_bar {
+    id = "__timeout__"
+    left = 50%-560
+    top = 50%+204
+    width = 1120
+    height = 2
+    show_text = false
+    text = ""
+    bar_style = "progress_bar_*.png"
+    highlight_style = "progress_highlight_*.png"
+}
+
+# --- Bottom Key Hints ---
++ label {
+    left = 50%-560
+    top = 100%-56
+    width = 1120
+    height = 22
+    align = "center"
+    font = "Geist Mono Regular 13"
+    color = "#7D7D7D"
+    text = "[↑↓] SELECT     [ENTER] BOOT     [E] EDIT     [C] CONSOLE"
+}
